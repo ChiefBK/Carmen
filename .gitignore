@@ -1,0 +1,7 @@
+*.spvchain
+*.wallet
+
+.gradle/
+.idea/
+
+out/
