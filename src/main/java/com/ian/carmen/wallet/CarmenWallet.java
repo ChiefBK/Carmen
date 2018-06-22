@@ -1,10 +1,21 @@
 package com.ian.carmen.wallet;
 
+import com.google.common.util.concurrent.FutureCallback;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
 import com.ian.carmen.common.Connection;
 import com.subgraph.orchid.encoders.Hex;
+import org.bitcoinj.core.Address;
+import org.bitcoinj.core.Coin;
+import org.bitcoinj.core.ECKey;
+import org.bitcoinj.core.NetworkParameters;
+import org.bitcoinj.core.PeerGroup;
+import org.bitcoinj.core.Transaction;
+import org.bitcoinj.core.TransactionConfidence;
+import org.bitcoinj.wallet.SendRequest;
+import org.bitcoinj.wallet.Wallet.SendResult;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
-import org.bitcoinj.core.*;
 import org.bitcoinj.core.listeners.TransactionConfidenceEventListener;
 import org.bitcoinj.kits.WalletAppKit;
 import org.bitcoinj.params.RegTestParams;
@@ -19,12 +30,11 @@ import org.bitcoinj.wallet.listeners.WalletCoinsReceivedEventListener;
 import org.bitcoinj.wallet.listeners.WalletCoinsSentEventListener;
 import org.json.simple.parser.ParseException;
 
+import javax.annotation.Nullable;
 import java.io.File;
 import java.io.IOException;
-import java.math.RoundingMode;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.text.DecimalFormat;
 import java.util.List;
 import java.util.Scanner;
 
@@ -78,7 +88,9 @@ public class CarmenWallet {
         }
 
         // Wait for sync
+        System.out.println("Waiting for wallet sync");
         kit.awaitRunning();
+        System.out.println("Done syncing");
 
 
         kit.wallet().addCoinsReceivedEventListener(new WalletCoinsReceivedEventListener() {
@@ -139,8 +151,6 @@ public class CarmenWallet {
         server.addListener(new CommandListener("tip") {
             @Override
             void commandReceived(final String[] args) {
-                // TODO
-                final PeerGroup peerGroup = kit.peerGroup();
                 final Wallet wallet = kit.wallet();
 
                 if (dancerAddress == null) {
@@ -149,17 +159,39 @@ public class CarmenWallet {
                 }
 
                 try {
-                    System.out.printf("Sending tip to dancer address: %s%n", dancerAddress);
-                    final Address address = Address.fromBase58(kit.params(), dancerAddress);
-
+                    // the wallet must have full initialized and calculated the amount of bitcoin equals one dollar
                     if (oneDollarOfBitcoins == null) {
-                        throw new IllegalStateException("dollar worth of bitcoin needs to be set before tipping");
+                        throw new IllegalStateException("dollar worth of bitcoin needs to be set before tipping - wallet needs to be fully initialized");
                     }
 
-                    final Transaction tx = wallet.createSend(address, oneDollarOfBitcoins);
-                    peerGroup.broadcastTransaction(tx);
+                    System.out.printf("Sending tip to dancer address: %s%n", dancerAddress);
+                    final Address address = Address.fromBase58(kit.params(), dancerAddress);
+                    final SendRequest sendRequest = SendRequest.to(address, oneDollarOfBitcoins);
+                    System.out.println("Amount sending: " + oneDollarOfBitcoins);
 
-                    server.sendMessage("tip broadcasted successfully");
+                    final Coin feePerKb = Coin.SATOSHI;
+                    System.out.println("Fee per Kb amount: " + feePerKb);
+
+                    sendRequest.feePerKb = feePerKb;
+                    sendRequest.ensureMinRequiredFee = true; // set to false if exactly want to pay the fee specified
+
+                    final SendResult result = wallet.sendCoins(kit.peerGroup(), sendRequest);
+                    System.out.println("sending coins");
+
+                    final ListenableFuture<Transaction> broadcastComplete = result.broadcastComplete;
+                    final FutureCallback<Transaction> callback = new FutureCallback<Transaction>() {
+                        @Override
+                        public void onSuccess(@Nullable Transaction result) {
+                            server.sendMessage("SUCCESS - tip broadcasted");
+                        }
+
+                        @Override
+                        public void onFailure(Throwable t) {
+                            server.sendMessage("FAIL - tip not broadcasted");
+                        }
+                    };
+                    Futures.addCallback(broadcastComplete, callback);
+
                 } catch (Exception e) {
                     server.sendMessage("exception while creating and sending tip");
                     e.printStackTrace();
@@ -195,6 +227,8 @@ public class CarmenWallet {
      * @throws ParseException
      */
     public static Coin getOneDollarOfBitcoin() throws IOException, ParseException {
+        System.out.println("Getting Bitcoin price");
+
         // create request
         URL url = new URL("https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=USD");
         HttpURLConnection con = (HttpURLConnection) url.openConnection();
@@ -211,8 +245,7 @@ public class CarmenWallet {
         // read response
         Scanner sc = new Scanner(url.openStream());
         StringBuilder response = new StringBuilder();
-        while(sc.hasNext())
-        {
+        while (sc.hasNext()) {
             response.append(sc.nextLine());
         }
 
@@ -220,7 +253,7 @@ public class CarmenWallet {
 
         // create JSON object from response and get price
         JSONParser parse = new JSONParser();
-        JSONObject obj = (JSONObject)parse.parse(response.toString());
+        JSONObject obj = (JSONObject) parse.parse(response.toString());
         double price = (Double) obj.get("USD");
         double dollarWorthOfBitcoin = 1 / price;
 
